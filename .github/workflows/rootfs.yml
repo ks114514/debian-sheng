@@ -57,6 +57,11 @@ on:
           - 'custom'
         default: 'dual (linux)'
 
+      quiet_boot:
+        description: 'Enable quiet boot with Plymouth splash'
+        type: boolean
+        default: true
+
       custom_partition:
         description: 'Custom partition (required when boot_mode=custom)'
         type: string
@@ -649,14 +654,29 @@ jobs:
       - name: "Parse Partition Label"
         id: partition
         run: |
+          if [[ "${{ inputs.quiet_boot }}" == "true" && "${{ inputs.desktop }}" != "server" ]]; then
+            QUIET_BOOT=true
+          else
+            QUIET_BOOT=false
+          fi
+          echo "quiet_boot_enabled=$QUIET_BOOT" >> $GITHUB_OUTPUT
+
           case "${{ inputs.boot_mode }}" in
             'single (userdata)')
               echo "label=userdata" >> $GITHUB_OUTPUT
-              echo "boot_img_pattern=boot_sheng_singleboot.img" >> $GITHUB_OUTPUT
+              if [[ "$QUIET_BOOT" == "true" ]]; then
+                echo "boot_img_pattern=boot_sheng_singleboot_plymouth.img" >> $GITHUB_OUTPUT
+              else
+                echo "boot_img_pattern=boot_sheng_singleboot.img" >> $GITHUB_OUTPUT
+              fi
               ;;
             'dual (linux)')
               echo "label=linux" >> $GITHUB_OUTPUT
-              echo "boot_img_pattern=boot_sheng_dualboot.img" >> $GITHUB_OUTPUT
+              if [[ "$QUIET_BOOT" == "true" ]]; then
+                echo "boot_img_pattern=boot_sheng_dualboot_plymouth.img" >> $GITHUB_OUTPUT
+              else
+                echo "boot_img_pattern=boot_sheng_dualboot.img" >> $GITHUB_OUTPUT
+              fi
               ;;
             'custom')
               echo "label=${{ inputs.custom_partition }}" >> $GITHUB_OUTPUT
@@ -859,6 +879,14 @@ jobs:
             libpolkit-gobject-1-0
           echo "✓ Base packages installed"
 
+      - name: "Install Plymouth"
+        if: ${{ steps.partition.outputs.quiet_boot_enabled == 'true' }}
+        run: |
+          sudo chroot "$ROOTFS_MOUNT" apt-get update
+          sudo chroot "$ROOTFS_MOUNT" apt-get install -y \
+            plymouth plymouth-themes
+          echo "✓ Plymouth installed"
+
       - name: "Install All .deb Packages"
         run: |
           sudo cp ./*.deb "$ROOTFS_MOUNT/tmp/"
@@ -960,6 +988,14 @@ jobs:
             dolphin kate
           echo "✓ KDE Plasma installed"
 
+      - name: "Install KDE Plymouth Settings"
+        if: ${{ inputs.desktop == 'KDE' && steps.partition.outputs.quiet_boot_enabled == 'true' }}
+        run: |
+          sudo chroot "$ROOTFS_MOUNT" apt-get update
+          sudo chroot "$ROOTFS_MOUNT" apt-get install -y \
+            kde-config-plymouth plymouth-theme-breeze
+          echo "✓ KDE Plymouth settings installed"
+
       - name: "Configure GDM"
         if: ${{ inputs.desktop == 'GNOME' && (!inputs.autologin) }}
         run: |
@@ -1045,17 +1081,21 @@ jobs:
         if: ${{ inputs.kernel_source == 'custom_build' }}
         run: |
           PARTITION="${{ steps.partition.outputs.label }}"
+          CMDLINE="root=PARTLABEL=$PARTITION"
+          if [[ "${{ steps.partition.outputs.quiet_boot_enabled }}" == "true" ]]; then
+            CMDLINE="$CMDLINE quiet splash plymouth.ignore-serial-consoles fbcon=map:1"
+          fi
           chmod +x mkbootimg
           ./mkbootimg \
             --kernel Image.gz-dtb_sheng \
-            --cmdline "root=PARTLABEL=$PARTITION" \
+            --cmdline "$CMDLINE" \
             --base 0x00000000 \
             --kernel_offset 0x00008000 \
             --tags_offset 0x01e00000 \
             --pagesize 4096 \
             --id \
             -o boot.img
-          echo "✓ boot.img generated (cmdline: root=PARTLABEL=$PARTITION)"
+          echo "✓ boot.img generated (cmdline: $CMDLINE)"
 
       # ----------------------------------------------------------------
       # Upload Final Artifacts
